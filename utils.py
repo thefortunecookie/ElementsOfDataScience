@@ -1,9 +1,39 @@
+"""Supporting code for Elements of Data Science
+
+by Allen Downey
+
+MIT License
+"""
+
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
+import contextlib
+import gzip
+import io
 import re
+import textwrap
 import os
+
+from IPython.core.magic import register_cell_magic
+from IPython.core.magic_arguments import argument, magic_arguments, parse_argstring
+
+from os.path import basename, exists
+from statsmodels.nonparametric.smoothers_lowess import lowess
+
+
+# Make the figures smaller to save some screen real estate.
+# The figures generated for the book have DPI 400, so scaling
+# them by a factor of 4 restores them to the size in the notebooks.
+plt.rcParams["figure.dpi"] = 75
+plt.rcParams["figure.figsize"] = [6, 3.5]
+
+
+def wrap(obj):
+    for line in textwrap.wrap(str(obj), subsequent_indent="    "):
+        print(line)
+
 
 class FixedWidthVariables(object):
     """Represents a set of variables in a fixed width file."""
@@ -19,11 +49,11 @@ class FixedWidthVariables(object):
         names: list of string variable names
         """
         self.variables = variables
-        self.colspecs = variables[['start', 'end']] - index_base
+        self.colspecs = variables[["start", "end"]] - index_base
 
         # convert colspecs to a list of pair of int
         self.colspecs = self.colspecs.astype(np.int).values.tolist()
-        self.names = variables['name']
+        self.names = variables["name"]
 
     def read_fixed_width(self, filename, **options):
         """Reads a fixed width ASCII file.
@@ -32,10 +62,7 @@ class FixedWidthVariables(object):
 
         returns: DataFrame
         """
-        df = pd.read_fwf(filename,
-                             colspecs=self.colspecs,
-                             names=self.names,
-                             **options)
+        df = pd.read_fwf(filename, colspecs=self.colspecs, names=self.names, **options)
         return df
 
 
@@ -47,32 +74,33 @@ def read_stata_dict(dct_file, **options):
 
     returns: FixedWidthVariables object
     """
-    type_map = dict(byte=int, int=int, long=int, float=float,
-                    double=float, numeric=float)
+    type_map = dict(
+        byte=int, int=int, long=int, float=float, double=float, numeric=float
+    )
 
     var_info = []
     with open(dct_file, **options) as f:
         for line in f:
-            match = re.search( r'_column\(([^)]*)\)', line)
+            match = re.search(r"_column\(([^)]*)\)", line)
             if not match:
                 continue
             start = int(match.group(1))
             t = line.split()
             vtype, name, fstring = t[1:4]
             name = name.lower()
-            if vtype.startswith('str'):
+            if vtype.startswith("str"):
                 vtype = str
             else:
                 vtype = type_map[vtype]
-            long_desc = ' '.join(t[4:]).strip('"')
+            long_desc = " ".join(t[4:]).strip('"')
             var_info.append((start, vtype, name, fstring, long_desc))
 
-    columns = ['start', 'type', 'name', 'fstring', 'desc']
+    columns = ["start", "type", "name", "fstring", "desc"]
     variables = pd.DataFrame(var_info, columns=columns)
 
     # fill in the end column by shifting the start column
-    variables['end'] = variables.start.shift(-1)
-    variables.loc[len(variables)-1, 'end'] = 0
+    variables["end"] = variables.start.shift(-1)
+    variables.loc[len(variables) - 1, "end"] = 0
 
     dct = FixedWidthVariables(variables, index_base=1)
     return dct
@@ -114,7 +142,7 @@ def resample_rows(df):
     return sample_rows(df, len(df), replace=True)
 
 
-def resample_rows_weighted(df, column='finalwgt'):
+def resample_rows_weighted(df, column="finalwgt"):
     """Resamples a DataFrame using probabilities proportional to given column.
 
     df: DataFrame
@@ -129,7 +157,7 @@ def resample_rows_weighted(df, column='finalwgt'):
     return sample
 
 
-def resample_by_year(df, column='wtssall'):
+def resample_by_year(df, column="wtssall"):
     """Resample rows within each year.
 
     df: DataFrame
@@ -137,9 +165,8 @@ def resample_by_year(df, column='wtssall'):
 
     returns DataFrame
     """
-    grouped = df.groupby('year')
-    samples = [resample_rows_weighted(group, column)
-               for _, group in grouped]
+    grouped = df.groupby("year")
+    samples = [resample_rows_weighted(group, column) for _, group in grouped]
     sample = pd.concat(samples, ignore_index=True)
     return sample
 
@@ -151,7 +178,7 @@ def values(series):
 
     returns: series mapping from values to frequencies
     """
-    return series.value_counts().sort_index()
+    return series.value_counts(dropna=False).sort_index()
 
 
 def count_by_year(gss, varname):
@@ -162,7 +189,7 @@ def count_by_year(gss, varname):
 
     returns: DataFrame with one row per year, one column per category.
     """
-    grouped = gss.groupby([varname, 'year'])
+    grouped = gss.groupby([varname, "year"])
     count = grouped[varname].count().unstack(level=0)
 
     # note: the following is not ideal, because it does not
@@ -170,6 +197,7 @@ def count_by_year(gss, varname):
     # zeros are during years when the question was not asked.
     count = count.replace(0, np.nan).dropna()
     return count
+
 
 def fill_missing(df, varname, badvals=[98, 99]):
     """Fill missing data with random values.
@@ -207,9 +235,9 @@ def round_into_bins(df, var, bin_width, high=None, low=0):
     if high is None:
         high = df[var].max()
 
-    bins = np.arange(low, high+bin_width, bin_width)
+    bins = np.arange(low, high + bin_width, bin_width)
     indices = np.digitize(df[var], bins)
-    return bins[indices-1]
+    return bins[indices - 1]
 
 
 def underride(d, **options):
@@ -236,8 +264,8 @@ def decorate(**options):
     And you can use `loc` to indicate the location of the legend
     (the default value is 'best')
     """
-    loc = options.pop('loc', 'best')
-    if options.pop('legend', True):
+    loc = options.pop("loc", "best")
+    if options.pop("legend", True):
         legend(loc=loc)
 
     plt.gca().set(**options)
@@ -249,39 +277,62 @@ def legend(**options):
     options are passed to plt.legend()
     https://matplotlib.org/api/_as_gen/matplotlib.pyplot.legend.html
     """
-    underride(options, loc='best')
+    underride(options, loc="best")
 
     ax = plt.gca()
     handles, labels = ax.get_legend_handles_labels()
-    #TODO: don't draw if there are none
-    ax.legend(handles, labels, **options)
+    if handles:
+        ax.legend(handles, labels, **options)
 
-from statsmodels.nonparametric.smoothers_lowess import lowess
 
-def make_lowess(series):
+def make_lowess(series, frac=2 / 3):
     """Use LOWESS to compute a smooth line.
 
     series: pd.Series
 
     returns: pd.Series
     """
-    endog = series.values
-    exog = series.index.values
+    y = series.values
+    x = series.index.values
 
-    smooth = lowess(endog, exog)
+    smooth = lowess(y, x, frac=frac)
     index, data = np.transpose(smooth)
-
     return pd.Series(data, index=index)
 
-def plot_series_lowess(series, color):
+
+def plot_lowess(series, color, frac=0.7, **options):
+    """Plot a smooth line.
+
+    series: pd.Series
+    color: string or tuple
+    """
+    if "label" not in options:
+        options["label"] = series.name
+
+    smooth = make_lowess(series, frac=frac)
+    smooth.plot(color=color, **options)
+
+
+def plot_series_lowess(series, color, frac=0.7, **options):
     """Plots a series of data points and a smooth line.
 
     series: pd.Series
     color: string or tuple
     """
-    series.plot(lw=0, marker='o', color=color, alpha=0.5)
-    smooth = make_lowess(series)
-    smooth.plot(label='_', color=color)
+    if "label" not in options:
+        options["label"] = series.name
+
+    x = series.index
+    y = series.values
+
+    if len(series) == 1:
+        # just plot the point
+        plt.plot(x, y, "o", color=color, alpha=0.5, label=options["label"])
+    else:
+        # plot the points and line
+        plt.plot(x, y, "o", color=color, alpha=0.5, label="_")
+        plot_lowess(series, color, frac, **options)
+
 
 def plot_columns_lowess(df, columns, colors):
     """Plot the columns in a DataFrame.
@@ -294,49 +345,44 @@ def plot_columns_lowess(df, columns, colors):
         series = df[col]
         plot_series_lowess(series, colors[col])
 
+
 def anchor_legend(x, y):
     """Put the legend at the given locationself.
 
     x: axis coordinate
     y: axis coordinate
     """
-    plt.legend(bbox_to_anchor=(x, y), loc='upper left', ncol=1)
+    plt.legend(bbox_to_anchor=(x, y), loc="upper left", ncol=1)
 
-from os.path import basename, exists
 
 def download(url):
     filename = basename(url)
     if not exists(filename):
         from urllib.request import urlretrieve
+
         local, _ = urlretrieve(url, filename)
-        print('Downloaded ' + local)
+        print("Downloaded " + local)
 
-import gzip
 
-def read_gss(dict_file='GSS.dct', data_file='GSS.dat.gz'):
+def read_gss(dict_file="GSS.dct", data_file="GSS.dat.gz"):
     from statadict import parse_stata_dict
 
-    download('https://github.com/AllenDowney/' +
-             'ElementsOfDataScience/raw/master/data/' +
-              dict_file)
+    download(
+        "https://github.com/AllenDowney/"
+        + "ElementsOfDataScience/raw/master/data/"
+        + dict_file
+    )
 
-    download('https://github.com/AllenDowney/' +
-             'ElementsOfDataScience/raw/master/data/' +
-              data_file)
+    download(
+        "https://github.com/AllenDowney/"
+        + "ElementsOfDataScience/raw/master/data/"
+        + data_file
+    )
 
     stata_dict = parse_stata_dict(dict_file)
     fp = gzip.open(data_file)
-    gss = pd.read_fwf(fp,
-                      names=stata_dict.names,
-                      colspecs=stata_dict.colspecs)
+    gss = pd.read_fwf(fp, names=stata_dict.names, colspecs=stata_dict.colspecs)
     return gss
-
-import contextlib
-import io
-import re
-
-from IPython.core.magic import register_cell_magic
-from IPython.core.magic_arguments import argument, magic_arguments, parse_argstring
 
 
 def traceback(mode):
@@ -344,11 +390,12 @@ def traceback(mode):
 
     mode: string
     """
+    # this context suppresses the output
     with contextlib.redirect_stdout(io.StringIO()):
-        get_ipython().run_cell(f'%xmode {mode}')
-    
+        get_ipython().run_cell(f"%xmode {mode}")
 
-traceback('Minimal')
+
+traceback("Minimal")
 
 
 def extract_function_name(text):
@@ -372,11 +419,11 @@ def expect_error(line, cell):
     try:
         get_ipython().run_cell(cell)
     except Exception as e:
-        get_ipython().run_cell('%tb')
+        get_ipython().run_cell("%tb")
 
 
 @magic_arguments()
-@argument('exception', help='Type of exception to catch')
+@argument("exception", help="Type of exception to catch")
 @register_cell_magic
 def expect(line, cell):
     args = parse_argstring(expect, line)
@@ -385,6 +432,3 @@ def expect(line, cell):
         get_ipython().run_cell(cell)
     except exception as e:
         get_ipython().run_cell("%tb")
-
-
-
